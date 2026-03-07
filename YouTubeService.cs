@@ -24,7 +24,7 @@ sealed class YouTubeService : IDisposable
     public async Task<IReadOnlyList<YouTubeResult>> SearchAsync(
         string query, int limit, CancellationToken ct = default)
     {
-        limit = Math.Clamp(limit, 1, 25);
+        limit = Math.Clamp(limit, 1, 50);
         var results = new List<YouTubeResult>(limit);
         var seen    = new HashSet<string>();
 
