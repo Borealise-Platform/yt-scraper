@@ -1,5 +1,3 @@
-# borealise-scrap-yt
-
 A C# microservice that scrapes YouTube because Google decided API quotas should be
 measured in "lol good luck". No API key. No quota. No mercy.
 
