@@ -17,7 +17,7 @@ sealed class YouTubeService : IDisposable
 
     /// <summary>
     /// Search YouTube for videos matching <paramref name="query"/>.
-    /// Mirrors searchYouTube() in youtube.ts — limit clamped to 1-25.
+    /// Mirrors searchYouTube() in youtube.ts — limit clamped to 1-50.
     /// Uses batch iteration so we stop as soon as we have enough results,
     /// minimising the number of HTTP round-trips.
     /// </summary>
