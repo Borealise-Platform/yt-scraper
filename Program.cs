@@ -1,6 +1,8 @@
 using System.Net;
 using BorealiseScrapYt;
 
+const string Tag = "Program";
+
 // ---------------------------------------------------------------------------
 // CLI args: --port / -p  (default 5001)
 // ---------------------------------------------------------------------------
@@ -25,13 +27,16 @@ listener.Start();
 using var yt  = new YouTubeService();
 using var cts = new CancellationTokenSource();
 
-Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
+Console.CancelKeyPress += (_, e) =>
+{
+    e.Cancel = true;
+    Log.Info(Tag, "Shutdown requested (Ctrl+C)");
+    cts.Cancel();
+};
 
-Console.WriteLine($"[borealise-scrap-yt] Listening on {prefix}");
-Console.WriteLine("  GET /search?q=<query>&limit=<n>    — search videos");
-Console.WriteLine("  GET /video?id=<videoId>            — get video info");
-Console.WriteLine("  GET /playlist?id=<playlistId>      — fetch all playlist tracks");
-Console.WriteLine("  Press Ctrl+C to stop.");
+Log.Info(Tag, $"Listening on {prefix}");
+Log.Info(Tag, "Routes: GET /search?q=&limit=  |  GET /video?id=  |  GET /playlist?id=");
+Log.Info(Tag, "Press Ctrl+C to stop");
 
 // ---------------------------------------------------------------------------
 // Main loop
@@ -51,4 +56,4 @@ while (!cts.Token.IsCancellationRequested)
     _ = Task.Run(() => RequestHandler.HandleAsync(ctx, yt, cts.Token), cts.Token);
 }
 
-Console.WriteLine("[borealise-scrap-yt] Stopped.");
+Log.Info(Tag, "Stopped.");

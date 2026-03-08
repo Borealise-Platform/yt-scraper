@@ -49,16 +49,24 @@ sealed class YouTubeService : IDisposable
     /// Uses batch iteration so we stop as soon as we have enough results,
     /// minimising the number of HTTP round-trips.
     /// </summary>
+    private const string Tag = "YouTubeService";
+
     public async Task<IReadOnlyList<YouTubeResult>> SearchAsync(
         string query, int limit, CancellationToken ct = default)
     {
         if (_apiClient != null)
         {
+            Log.Info(Tag, $"Search via API: q={query} limit={limit}");
             var apiResults = await _apiClient.SearchAsync(query, limit, ct);
             if (apiResults != null && apiResults.Count > 0)
+            {
+                Log.Info(Tag, $"Search via API: got {apiResults.Count} results");
                 return apiResults;
+            }
+            Log.Warn(Tag, "Search via API returned nothing, falling back to scrape");
         }
 
+        Log.Info(Tag, $"Search via scrape: q={query} limit={limit}");
         limit = Math.Clamp(limit, 1, 50);
         var results = new List<YouTubeResult>(limit);
         var seen    = new HashSet<string>();
@@ -87,6 +95,7 @@ sealed class YouTubeService : IDisposable
             if (results.Count >= limit) break;
         }
 
+        Log.Info(Tag, $"Search via scrape: got {results.Count} results");
         return results;
     }
 
@@ -104,14 +113,21 @@ sealed class YouTubeService : IDisposable
     {
         if (_apiClient != null)
         {
+            Log.Info(Tag, $"GetVideo via API: id={videoId}");
             var apiResult = await _apiClient.GetVideoAsync(videoId, ct);
             if (apiResult != null)
+            {
+                Log.Info(Tag, $"GetVideo via API: found '{apiResult.Title}'");
                 return apiResult;
+            }
+            Log.Warn(Tag, $"GetVideo via API returned null for {videoId}, falling back to scrape");
         }
 
+        Log.Info(Tag, $"GetVideo via scrape: id={videoId}");
         try
         {
             var video = await _yt.Videos.GetAsync(videoId, ct);
+            Log.Info(Tag, $"GetVideo via scrape: found '{video.Title}' ({(int)(video.Duration?.TotalSeconds ?? 0)}s)");
 
             return new YouTubeResult(
                 Source:    "youtube",
@@ -122,10 +138,13 @@ sealed class YouTubeService : IDisposable
                 Thumbnail: ThumbnailHelper.GetBest(video.Thumbnails)
             );
         }
-        catch (Exception ex) when (
-            ex is YoutubeExplode.Exceptions.VideoUnplayableException or
-                  YoutubeExplode.Exceptions.VideoUnavailableException)
+        catch (Exception ex)
         {
+            if (ex is YoutubeExplode.Exceptions.VideoUnplayableException or
+                      YoutubeExplode.Exceptions.VideoUnavailableException)
+                Log.Warn(Tag, $"GetVideo: video unavailable: {videoId}");
+            else
+                Log.Error(Tag, $"GetVideo: unexpected error for {videoId}", ex);
             return null;
         }
     }
@@ -147,11 +166,17 @@ sealed class YouTubeService : IDisposable
     {
         if (_apiClient != null)
         {
+            Log.Info(Tag, $"GetPlaylist via API: id={playlistId}");
             var apiResult = await _apiClient.GetPlaylistAsync(playlistId, ct);
             if (apiResult != null)
+            {
+                Log.Info(Tag, $"GetPlaylist via API: {apiResult.Value.Tracks.Count} tracks, {apiResult.Value.Errors.Count} errors");
                 return apiResult.Value;
+            }
+            Log.Warn(Tag, $"GetPlaylist via API returned null for {playlistId}, falling back to scrape");
         }
 
+        Log.Info(Tag, $"GetPlaylist via scrape: id={playlistId}");
         var tracks = new List<YouTubeResult>();
         var errors = new List<string>();
 
@@ -161,9 +186,9 @@ sealed class YouTubeService : IDisposable
 
         await foreach (var video in _yt.Playlists.GetVideosAsync(playlistUrl, ct))
         {
-            // YoutubeExplode surfaces unavailable playlist entries with an empty title
             if (string.IsNullOrWhiteSpace(video.Title))
             {
+                Log.Warn(Tag, $"GetPlaylist: skipping unavailable video '{video.Id}'");
                 errors.Add($"Video '{video.Id}' is unavailable or private");
                 continue;
             }
@@ -178,6 +203,7 @@ sealed class YouTubeService : IDisposable
             ));
         }
 
+        Log.Info(Tag, $"GetPlaylist via scrape: {tracks.Count} tracks, {errors.Count} errors");
         return (tracks, errors);
     }
 

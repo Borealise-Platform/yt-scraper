@@ -3,19 +3,21 @@ using System.Text;
 
 namespace BorealiseScrapYt;
 
-/// <summary>
-/// Routes incoming HTTP requests to the appropriate <see cref="YouTubeService"/> method
-/// and writes a JSON response.
-/// </summary>
 static class RequestHandler
 {
+    private const string Tag = "RequestHandler";
+
     public static async Task HandleAsync(
         HttpListenerContext ctx,
         YouTubeService      yt,
         CancellationToken   ct)
     {
-        var req = ctx.Request;
-        var res = ctx.Response;
+        var req  = ctx.Request;
+        var res  = ctx.Response;
+        var path = req.Url?.AbsolutePath ?? "/";
+        var qs   = req.Url?.Query ?? "";
+
+        Log.Info(Tag, $"{req.HttpMethod} {path}{qs}");
 
         res.ContentType = "application/json; charset=utf-8";
 
@@ -24,8 +26,6 @@ static class RequestHandler
 
         try
         {
-            var path = req.Url?.AbsolutePath ?? "/";
-
             if (path == "/search")
             {
                 var query = req.QueryString["q"]?.Trim() ?? "";
@@ -38,7 +38,9 @@ static class RequestHandler
                 }
                 else
                 {
+                    Log.Info(Tag, $"Search: q={query} limit={limit}");
                     var results = await yt.SearchAsync(query, limit, ct);
+                    Log.Info(Tag, $"Search: returned {results.Count} results");
                     statusCode  = 200;
                     body        = JsonHelper.Serialize(new SearchResponse(results));
                 }
@@ -54,14 +56,17 @@ static class RequestHandler
                 }
                 else
                 {
+                    Log.Info(Tag, $"Video: id={videoId}");
                     var video = await yt.GetVideoAsync(videoId, ct);
                     if (video is null)
                     {
+                        Log.Warn(Tag, $"Video not found: {videoId}");
                         statusCode = 404;
                         body       = JsonHelper.Serialize(new ErrorResponse("Video not found or unavailable"));
                     }
                     else
                     {
+                        Log.Info(Tag, $"Video: found '{video.Title}' ({video.Duration}s)");
                         statusCode = 200;
                         body       = JsonHelper.Serialize(new VideoResponse(video));
                     }
@@ -78,14 +83,19 @@ static class RequestHandler
                 }
                 else
                 {
+                    Log.Info(Tag, $"Playlist: id={playlistId}");
                     try
                     {
                         var (tracks, errors) = await yt.GetPlaylistAsync(playlistId, ct);
+                        Log.Info(Tag, $"Playlist: {tracks.Count} tracks, {errors.Count} errors");
+                        if (errors.Count > 0)
+                            Log.Warn(Tag, $"Playlist errors: {string.Join("; ", errors)}");
                         statusCode = 200;
                         body       = JsonHelper.Serialize(new PlaylistResponse(tracks, errors));
                     }
-                    catch (YoutubeExplode.Exceptions.PlaylistUnavailableException)
+                    catch (YoutubeExplode.Exceptions.PlaylistUnavailableException ex)
                     {
+                        Log.Warn(Tag, $"Playlist unavailable: {playlistId}: {ex.Message}");
                         statusCode = 404;
                         body       = JsonHelper.Serialize(new ErrorResponse("Playlist not found or unavailable"));
                     }
@@ -93,6 +103,7 @@ static class RequestHandler
             }
             else
             {
+                Log.Warn(Tag, $"Unknown route: {path}");
                 statusCode = 404;
                 body       = JsonHelper.Serialize(new ErrorResponse($"Unknown route: {path}"));
             }
@@ -103,19 +114,13 @@ static class RequestHandler
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"[RequestHandler] Unhandled error: {ex}");
+            Log.Error(Tag, $"Unhandled error on {path}", ex);
             statusCode = 500;
             body       = JsonHelper.Serialize(new ErrorResponse("Internal server error"));
         }
-        finally
-        {
-            // Ensure the response is always closed even if we return early above
-            // (OperationCanceledException path). The Close() call in the normal path
-            // below is only reached when finally runs after the try block completes.
-            // We rely on HttpListenerResponse being idempotent on double-close.
-        }
 
         res.StatusCode = statusCode;
+        Log.Info(Tag, $"Response: {statusCode}");
         var bytes = Encoding.UTF8.GetBytes(body);
         res.ContentLength64 = bytes.Length;
         await res.OutputStream.WriteAsync(bytes, ct);
