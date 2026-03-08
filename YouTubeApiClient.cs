@@ -29,8 +29,14 @@ sealed class YouTubeApiClient : IDisposable
 
         var newIndex = (_getKeyIndex() + 1) % _apiKeys.Count;
         _setKeyIndex(newIndex);
-        Log.Info(Tag, $"Rotated to API key index {newIndex} ({_apiKeys[newIndex]})");
         return _apiKeys[newIndex];
+    }
+
+    private int RotateKeyIndex(int currentIndex)
+    {
+        var newIndex = (currentIndex + 1) % _apiKeys.Count;
+        Log.Info(Tag, $"Rotated to API key index {newIndex} ({_apiKeys[newIndex]})");
+        return newIndex;
     }
 
     public async Task<IReadOnlyList<YouTubeResult>?> SearchAsync(string query, int limit, CancellationToken ct = default)
@@ -191,13 +197,18 @@ sealed class YouTubeApiClient : IDisposable
 
         Log.Info(Tag, $"GetPlaylist: id={cleanPlaylistId}, limit={limit}");
 
-        // Step 1: page through playlistItems
-        while (tracks.Count < limit && keyAttempts < _apiKeys.Count * 3)
+        // Step 1: page through playlistItems (use same key until quota hit)
+        var currentKeyIndex = 0;
+        const int maxPages = 1000; // safety limit
+        while (tracks.Count < limit && keyAttempts < _apiKeys.Count && page < maxPages)
         {
             page++;
-            var key = GetNextKey();
+            var key = _apiKeys[currentKeyIndex];
             var maxResults = Math.Min(50, limit - tracks.Count);
             var url = $"{BaseUrl}/playlistItems?part=snippet,contentDetails&maxResults={maxResults}&playlistId={cleanPlaylistId}&key={key}";
+
+            if (page == 1 || page % 100 == 0)
+                Log.Info(Tag, $"GetPlaylist: page {page} (key {currentKeyIndex})");
             if (!string.IsNullOrEmpty(nextPageToken))
                 url += $"&pageToken={nextPageToken}";
 
@@ -212,11 +223,13 @@ sealed class YouTubeApiClient : IDisposable
                     if (response.StatusCode == HttpStatusCode.Forbidden ||
                         errorBody.Contains("quotaExceeded", StringComparison.OrdinalIgnoreCase))
                     {
-                        Log.Warn(Tag, $"GetPlaylist: quota exceeded or forbidden ({(int)response.StatusCode}), trying next key");
+                        Log.Warn(Tag, $"GetPlaylist: quota exceeded on key {currentKeyIndex}, trying next key");
+                        currentKeyIndex = RotateKeyIndex(currentKeyIndex);
                         keyAttempts++;
                         continue;
                     }
                     Log.Error(Tag, $"GetPlaylist: API error {(int)response.StatusCode}: {errorBody}");
+                    currentKeyIndex = RotateKeyIndex(currentKeyIndex);
                     keyAttempts++;
                     continue;
                 }
@@ -258,10 +271,16 @@ sealed class YouTubeApiClient : IDisposable
                         break;
                 }
 
-                Log.Info(Tag, $"GetPlaylist: page {page} yielded {data.Items.Count} items (total so far: {tracks.Count})");
+                if (page % 100 == 0)
+                    Log.Info(Tag, $"GetPlaylist: page {page} yielded {data.Items.Count} items (total so far: {tracks.Count})");
                 nextPageToken = data.NextPageToken;
                 if (string.IsNullOrEmpty(nextPageToken) || tracks.Count >= limit)
                     break;
+                if (page >= maxPages)
+                {
+                    Log.Warn(Tag, $"GetPlaylist: hit max pages limit ({maxPages}), stopping");
+                    break;
+                }
             }
             catch (Exception ex)
             {
