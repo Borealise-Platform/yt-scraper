@@ -38,8 +38,9 @@ sealed class YouTubeApiClient : IDisposable
         var results = new List<YouTubeResult>();
         string? nextPageToken = null;
         int page = 0;
+        int keyAttempts = 0;
 
-        while (results.Count < limit)
+        while (results.Count < limit && keyAttempts < _apiKeys.Count * 3)
         {
             page++;
             var key = GetNextKey();
@@ -61,10 +62,12 @@ sealed class YouTubeApiClient : IDisposable
                         errorBody.Contains("dailyLimitExceeded", StringComparison.OrdinalIgnoreCase))
                     {
                         Log.Warn(Tag, $"Search: quota exceeded or forbidden ({(int)response.StatusCode}), trying next key");
+                        keyAttempts++;
                         continue;
                     }
                     Log.Error(Tag, $"Search: API error {(int)response.StatusCode}: {errorBody}");
-                    return null;
+                    keyAttempts++;
+                    continue;
                 }
 
                 var data = await response.Content.ReadFromJsonAsync<YouTubeSearchResponse>();
@@ -73,6 +76,8 @@ sealed class YouTubeApiClient : IDisposable
                     Log.Info(Tag, "Search: no more items from API");
                     break;
                 }
+
+                keyAttempts = 0;
 
                 foreach (var item in data.Items)
                 {
@@ -96,15 +101,12 @@ sealed class YouTubeApiClient : IDisposable
                 if (string.IsNullOrEmpty(nextPageToken))
                     break;
             }
-            catch (HttpRequestException ex)
+            catch (Exception ex)
             {
-                Log.Error(Tag, "Search: HTTP error", ex);
-                return results.Count > 0 ? results : null;
-            }
-            catch (TaskCanceledException ex)
-            {
-                Log.Warn(Tag, $"Search: request cancelled: {ex.Message}");
-                return results.Count > 0 ? results : null;
+                Log.Error(Tag, $"Search: error on page {page}", ex);
+                keyAttempts++;
+                if (results.Count > 0)
+                    break;
             }
         }
 
@@ -114,53 +116,59 @@ sealed class YouTubeApiClient : IDisposable
 
     public async Task<YouTubeResult?> GetVideoAsync(string videoId, CancellationToken ct = default)
     {
-        var key = GetNextKey();
-        var url = $"{BaseUrl}/videos?part=snippet,contentDetails&id={videoId}&key={key}";
-
         Log.Info(Tag, $"GetVideo: id={videoId}");
 
-        try
+        for (int attempt = 0; attempt < _apiKeys.Count; attempt++)
         {
-            var response = await _http.GetAsync(url, ct);
+            var key = GetNextKey();
+            var url = $"{BaseUrl}/videos?part=snippet,contentDetails&id={videoId}&key={key}";
 
-            if (!response.IsSuccessStatusCode)
+            try
             {
-                var errorBody = await response.Content.ReadAsStringAsync(ct);
-                if (response.StatusCode == HttpStatusCode.Forbidden ||
-                    errorBody.Contains("quotaExceeded", StringComparison.OrdinalIgnoreCase))
+                var response = await _http.GetAsync(url, ct);
+
+                if (!response.IsSuccessStatusCode)
                 {
-                    Log.Warn(Tag, $"GetVideo: quota exceeded or forbidden ({(int)response.StatusCode})");
+                    var errorBody = await response.Content.ReadAsStringAsync(ct);
+                    if (response.StatusCode == HttpStatusCode.Forbidden ||
+                        errorBody.Contains("quotaExceeded", StringComparison.OrdinalIgnoreCase))
+                    {
+                        Log.Warn(Tag, $"GetVideo: quota exceeded or forbidden ({(int)response.StatusCode}), trying next key");
+                        continue;
+                    }
+                    Log.Error(Tag, $"GetVideo: API error {(int)response.StatusCode}: {errorBody}");
                     return null;
                 }
-                Log.Error(Tag, $"GetVideo: API error {(int)response.StatusCode}: {errorBody}");
-                return null;
-            }
 
-            var data = await response.Content.ReadFromJsonAsync<YouTubeVideoResponse>();
-            var item = data?.Items?.FirstOrDefault();
-            if (item?.Snippet == null || string.IsNullOrEmpty(item.Id))
+                var data = await response.Content.ReadFromJsonAsync<YouTubeVideoResponse>();
+                var item = data?.Items?.FirstOrDefault();
+                if (item?.Snippet == null || string.IsNullOrEmpty(item.Id))
+                {
+                    Log.Warn(Tag, $"GetVideo: no item returned for id={videoId}");
+                    return null;
+                }
+
+                var duration = ParseDuration(item.ContentDetails?.Duration);
+                Log.Info(Tag, $"GetVideo: found '{item.Snippet.Title}' ({duration}s)");
+
+                return new YouTubeResult(
+                    Source:    "youtube",
+                    SourceId:  item.Id,
+                    Title:     item.Snippet.Title ?? "",
+                    Artist:    item.Snippet.ChannelTitle ?? "",
+                    Duration:  duration,
+                    Thumbnail: item.Snippet.Thumbnails?.Medium?.Url ?? item.Snippet.Thumbnails?.High?.Url
+                );
+            }
+            catch (Exception ex)
             {
-                Log.Warn(Tag, $"GetVideo: no item returned for id={videoId}");
-                return null;
+                Log.Error(Tag, $"GetVideo: unexpected error for id={videoId}", ex);
+                continue;
             }
-
-            var duration = ParseDuration(item.ContentDetails?.Duration);
-            Log.Info(Tag, $"GetVideo: found '{item.Snippet.Title}' ({duration}s)");
-
-            return new YouTubeResult(
-                Source:    "youtube",
-                SourceId:  item.Id,
-                Title:     item.Snippet.Title ?? "",
-                Artist:    item.Snippet.ChannelTitle ?? "",
-                Duration:  duration,
-                Thumbnail: item.Snippet.Thumbnails?.Medium?.Url ?? item.Snippet.Thumbnails?.High?.Url
-            );
         }
-        catch (Exception ex)
-        {
-            Log.Error(Tag, $"GetVideo: unexpected error for id={videoId}", ex);
-            return null;
-        }
+
+        Log.Warn(Tag, $"GetVideo: all {_apiKeys.Count} API keys failed for {videoId}");
+        return null;
     }
 
     public async Task<(IReadOnlyList<YouTubeResult> Tracks, IReadOnlyList<string> Errors)?> 
@@ -171,6 +179,7 @@ sealed class YouTubeApiClient : IDisposable
         var videoIds     = new List<string>();
         string? nextPageToken = null;
         int page = 0;
+        int keyAttempts = 0;
 
         var cleanPlaylistId = playlistId;
         if (playlistId.Contains("list="))
@@ -183,7 +192,7 @@ sealed class YouTubeApiClient : IDisposable
         Log.Info(Tag, $"GetPlaylist: id={cleanPlaylistId}, limit={limit}");
 
         // Step 1: page through playlistItems
-        while (tracks.Count < limit)
+        while (tracks.Count < limit && keyAttempts < _apiKeys.Count * 3)
         {
             page++;
             var key = GetNextKey();
@@ -203,11 +212,13 @@ sealed class YouTubeApiClient : IDisposable
                     if (response.StatusCode == HttpStatusCode.Forbidden ||
                         errorBody.Contains("quotaExceeded", StringComparison.OrdinalIgnoreCase))
                     {
-                        Log.Warn(Tag, $"GetPlaylist: quota exceeded or forbidden ({(int)response.StatusCode}), signalling fallback");
-                        return null;
+                        Log.Warn(Tag, $"GetPlaylist: quota exceeded or forbidden ({(int)response.StatusCode}), trying next key");
+                        keyAttempts++;
+                        continue;
                     }
                     Log.Error(Tag, $"GetPlaylist: API error {(int)response.StatusCode}: {errorBody}");
-                    break;
+                    keyAttempts++;
+                    continue;
                 }
 
                 var data = await response.Content.ReadFromJsonAsync<YouTubePlaylistResponse>();
@@ -216,6 +227,8 @@ sealed class YouTubeApiClient : IDisposable
                     Log.Info(Tag, "GetPlaylist: no more items");
                     break;
                 }
+
+                keyAttempts = 0;
 
                 foreach (var item in data.Items)
                 {
@@ -253,8 +266,16 @@ sealed class YouTubeApiClient : IDisposable
             catch (Exception ex)
             {
                 Log.Error(Tag, "GetPlaylist: error fetching playlist page", ex);
-                break;
+                keyAttempts++;
+                if (tracks.Count > 0)
+                    break;
             }
+        }
+
+        if (tracks.Count == 0)
+        {
+            Log.Warn(Tag, "GetPlaylist: all API keys failed, signalling fallback");
+            return null;
         }
 
         // Step 2: batch-fetch durations
@@ -282,26 +303,30 @@ sealed class YouTubeApiClient : IDisposable
                     continue;
 
                 foreach (var item in data.Items)
+                {
                     if (!string.IsNullOrEmpty(item.Id) && item.ContentDetails != null)
+                    {
                         durations[item.Id] = ParseDuration(item.ContentDetails.Duration);
+                    }
+                }
+
+                Log.Info(Tag, $"GetPlaylist: duration batch {i / 50 + 1} done, got {data.Items.Count} items");
             }
             catch (Exception ex)
             {
-                Log.Error(Tag, "GetPlaylist: error fetching duration batch", ex);
+                Log.Error(Tag, $"GetPlaylist: duration batch error", ex);
                 break;
             }
         }
 
-        Log.Info(Tag, $"GetPlaylist: resolved {durations.Count}/{videoIds.Count} durations");
-
-        // Step 3: merge
+        // Step 3: merge durations into tracks
         var result = tracks.Select(t =>
             durations.TryGetValue(t.SourceId, out var dur)
                 ? t with { Duration = dur }
                 : t
         ).ToList();
 
-        Log.Info(Tag, $"GetPlaylist: done — {result.Count} tracks, {errors.Count} errors");
+        Log.Info(Tag, $"GetPlaylist: returning {result.Count} tracks");
         return (result, errors);
     }
 
