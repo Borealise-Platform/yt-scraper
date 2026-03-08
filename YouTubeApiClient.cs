@@ -164,7 +164,7 @@ sealed class YouTubeApiClient : IDisposable
     }
 
     public async Task<(IReadOnlyList<YouTubeResult> Tracks, IReadOnlyList<string> Errors)?> 
-        GetPlaylistAsync(string playlistId, CancellationToken ct = default)
+        GetPlaylistAsync(string playlistId, int limit = int.MaxValue, CancellationToken ct = default)
     {
         var tracks       = new List<YouTubeResult>();
         var errors       = new List<string>();
@@ -180,14 +180,15 @@ sealed class YouTubeApiClient : IDisposable
             cleanPlaylistId = query["list"] ?? playlistId;
         }
 
-        Log.Info(Tag, $"GetPlaylist: id={cleanPlaylistId}");
+        Log.Info(Tag, $"GetPlaylist: id={cleanPlaylistId}, limit={limit}");
 
         // Step 1: page through playlistItems
-        while (true)
+        while (tracks.Count < limit)
         {
             page++;
             var key = GetNextKey();
-            var url = $"{BaseUrl}/playlistItems?part=snippet,contentDetails&maxResults=50&playlistId={cleanPlaylistId}&key={key}";
+            var maxResults = Math.Min(50, limit - tracks.Count);
+            var url = $"{BaseUrl}/playlistItems?part=snippet,contentDetails&maxResults={maxResults}&playlistId={cleanPlaylistId}&key={key}";
             if (!string.IsNullOrEmpty(nextPageToken))
                 url += $"&pageToken={nextPageToken}";
 
@@ -239,11 +240,14 @@ sealed class YouTubeApiClient : IDisposable
                         Duration:  0,
                         Thumbnail: item.Snippet?.Thumbnails?.Medium?.Url ?? item.Snippet?.Thumbnails?.High?.Url
                     ));
+
+                    if (tracks.Count >= limit)
+                        break;
                 }
 
                 Log.Info(Tag, $"GetPlaylist: page {page} yielded {data.Items.Count} items (total so far: {tracks.Count})");
                 nextPageToken = data.NextPageToken;
-                if (string.IsNullOrEmpty(nextPageToken))
+                if (string.IsNullOrEmpty(nextPageToken) || tracks.Count >= limit)
                     break;
             }
             catch (Exception ex)

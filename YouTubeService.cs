@@ -161,13 +161,14 @@ sealed class YouTubeService : IDisposable
     /// <param name="playlistId">
     /// A raw playlist ID (e.g. <c>PLxxxxxxxxxx</c>) or a full YouTube playlist URL.
     /// </param>
+    /// <param name="limit">Max tracks to return (default unlimited)</param>
     public async Task<(IReadOnlyList<YouTubeResult> Tracks, IReadOnlyList<string> Errors)>
-        GetPlaylistAsync(string playlistId, CancellationToken ct = default)
+        GetPlaylistAsync(string playlistId, int limit = int.MaxValue, CancellationToken ct = default)
     {
         if (_apiClient != null)
         {
-            Log.Info(Tag, $"GetPlaylist via API: id={playlistId}");
-            var apiResult = await _apiClient.GetPlaylistAsync(playlistId, ct);
+            Log.Info(Tag, $"GetPlaylist via API: id={playlistId}, limit={limit}");
+            var apiResult = await _apiClient.GetPlaylistAsync(playlistId, limit, ct);
             if (apiResult != null)
             {
                 Log.Info(Tag, $"GetPlaylist via API: {apiResult.Value.Tracks.Count} tracks, {apiResult.Value.Errors.Count} errors");
@@ -176,7 +177,7 @@ sealed class YouTubeService : IDisposable
             Log.Warn(Tag, $"GetPlaylist via API returned null for {playlistId}, falling back to scrape");
         }
 
-        Log.Info(Tag, $"GetPlaylist via scrape: id={playlistId}");
+        Log.Info(Tag, $"GetPlaylist via scrape: id={playlistId}, limit={limit}");
         var tracks = new List<YouTubeResult>();
         var errors = new List<string>();
 
@@ -186,6 +187,8 @@ sealed class YouTubeService : IDisposable
 
         await foreach (var video in _yt.Playlists.GetVideosAsync(playlistUrl, ct))
         {
+            if (tracks.Count >= limit) break;
+
             if (string.IsNullOrWhiteSpace(video.Title))
             {
                 Log.Warn(Tag, $"GetPlaylist: skipping unavailable video '{video.Id}'");

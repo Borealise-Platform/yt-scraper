@@ -75,6 +75,7 @@ static class RequestHandler
             else if (path == "/playlist")
             {
                 var playlistId = req.QueryString["id"]?.Trim() ?? "";
+                var limit      = int.TryParse(req.QueryString["limit"], out var l) ? l : int.MaxValue;
 
                 if (string.IsNullOrEmpty(playlistId))
                 {
@@ -83,10 +84,10 @@ static class RequestHandler
                 }
                 else
                 {
-                    Log.Info(Tag, $"Playlist: id={playlistId}");
+                    Log.Info(Tag, $"Playlist: id={playlistId}, limit={limit}");
                     try
                     {
-                        var (tracks, errors) = await yt.GetPlaylistAsync(playlistId, ct);
+                        var (tracks, errors) = await yt.GetPlaylistAsync(playlistId, limit, ct);
                         Log.Info(Tag, $"Playlist: {tracks.Count} tracks, {errors.Count} errors");
                         if (errors.Count > 0)
                             Log.Warn(Tag, $"Playlist errors: {string.Join("; ", errors)}");
