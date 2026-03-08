@@ -27,3 +27,7 @@ record PlaylistResponse(
 record ErrorResponse(
     [property: JsonPropertyName("error")] string Error
 );
+
+record AppConfig(
+    [property: JsonPropertyName("YouTubeApiKeys")] List<string>? YouTubeApiKeys = null
+);

@@ -1,15 +1,43 @@
+using System.Net.Http.Json;
+using System.Text.Json;
 using YoutubeExplode;
 using YoutubeExplode.Search;
 
 namespace BorealiseScrapYt;
 
-/// <summary>
-/// Wraps YoutubeExplode to expose the three operations needed by the Borealise backend:
-/// search, single-video lookup, and full playlist fetch — all without an API key or quota.
-/// </summary>
 sealed class YouTubeService : IDisposable
 {
     private readonly YoutubeClient _yt = new();
+    private readonly YouTubeApiClient? _apiClient;
+    private readonly List<string> _apiKeys;
+    private int _currentKeyIndex;
+
+    public YouTubeService()
+    {
+        var config = LoadConfig();
+        _apiKeys = config.YouTubeApiKeys ?? [];
+        if (_apiKeys.Count > 0)
+        {
+            _apiClient = new YouTubeApiClient(_apiKeys, () => _currentKeyIndex, i => _currentKeyIndex = i);
+        }
+    }
+
+    private static AppConfig LoadConfig()
+    {
+        var path = Path.Combine(AppContext.BaseDirectory, "appsettings.json");
+        if (!File.Exists(path))
+            return new AppConfig();
+
+        try
+        {
+            var json = File.ReadAllText(path);
+            return JsonSerializer.Deserialize<AppConfig>(json) ?? new AppConfig();
+        }
+        catch
+        {
+            return new AppConfig();
+        }
+    }
 
     // -------------------------------------------------------------------------
     // Search
@@ -24,6 +52,13 @@ sealed class YouTubeService : IDisposable
     public async Task<IReadOnlyList<YouTubeResult>> SearchAsync(
         string query, int limit, CancellationToken ct = default)
     {
+        if (_apiClient != null)
+        {
+            var apiResults = await _apiClient.SearchAsync(query, limit, ct);
+            if (apiResults != null && apiResults.Count > 0)
+                return apiResults;
+        }
+
         limit = Math.Clamp(limit, 1, 50);
         var results = new List<YouTubeResult>(limit);
         var seen    = new HashSet<string>();
@@ -67,6 +102,13 @@ sealed class YouTubeService : IDisposable
     public async Task<YouTubeResult?> GetVideoAsync(
         string videoId, CancellationToken ct = default)
     {
+        if (_apiClient != null)
+        {
+            var apiResult = await _apiClient.GetVideoAsync(videoId, ct);
+            if (apiResult != null)
+                return apiResult;
+        }
+
         try
         {
             var video = await _yt.Videos.GetAsync(videoId, ct);
@@ -103,6 +145,13 @@ sealed class YouTubeService : IDisposable
     public async Task<(IReadOnlyList<YouTubeResult> Tracks, IReadOnlyList<string> Errors)>
         GetPlaylistAsync(string playlistId, CancellationToken ct = default)
     {
+        if (_apiClient != null)
+        {
+            var apiResult = await _apiClient.GetPlaylistAsync(playlistId, ct);
+            if (apiResult != null)
+                return apiResult.Value;
+        }
+
         var tracks = new List<YouTubeResult>();
         var errors = new List<string>();
 
@@ -132,5 +181,8 @@ sealed class YouTubeService : IDisposable
         return (tracks, errors);
     }
 
-    public void Dispose() { }
+    public void Dispose() 
+    {
+        _apiClient?.Dispose();
+    }
 }
